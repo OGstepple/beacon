@@ -1,0 +1,22 @@
+# Only the contents of site/ are published.
+[build]
+  publish = "site"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Spectrum / Canary bot logging. Fails open: pages always serve.
+[[edge_functions]]
+  path = "/*"
+  function = "bot-log"
+
+[[redirects]]
+  from = "/api/leave"
+  to = "/.netlify/functions/leave"
+  status = 200
+
+[[redirects]]
+  from = "/api/understory"
+  to = "/.netlify/functions/understory"
+  status = 200

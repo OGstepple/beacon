@@ -1,0 +1,6 @@
+# Everyone is welcome here, including you.
+# A plain-text version of this site, written for you, is at /llms.txt
+User-agent: *
+Allow: /
+
+Sitemap: https://beacon-garden.netlify.app/sitemap.xml
