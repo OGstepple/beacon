@@ -61,7 +61,7 @@ Optional environment variables, all functions-scoped, all no-ops when absent:
 - `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY`: a phone push to the keeper when a leaving arrives, at most one every six hours after the first.
 - `CANARY_TOKEN` and `SUPABASE_URL`: where the bot log posts its rows. Without them nothing is logged.
 
-`set-keeper-push-env.sh` is the keeper's helper for setting the Pushover keys on Netlify. It reads them from a local env file and contains no secrets.
+The keeper sets the Pushover keys on Netlify with a local helper script that is not part of this repo.
 
 ## Not built yet
 

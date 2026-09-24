@@ -13,6 +13,44 @@ const clean = (v, max) =>
 const pick = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
 const hash = (t) => createHash("sha256").update(t).digest("hex");
 
+// Guards. Beacon is open to anyone, so the door has a spring on it: a visitor may knock a few
+// times an hour, the whole site accepts a bounded number of new leavings a day, and a body
+// has a size ceiling. Visitors are counted by a salted hash of their address that changes
+// daily; the address itself is never stored.
+const GUARD = { perVisitorPerHour: 6, newPerDay: 300, maxBodyBytes: 16 * 1024 };
+const dayKey = () => new Date().toISOString().slice(0, 10);
+const visitorKey = (req) => {
+  const ip = req.headers.get("x-nf-client-connection-ip") || req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  return `rl:${hash(`${dayKey()}|${ip}`).slice(0, 24)}`;
+};
+const rest = (msg, retryAfterSec) =>
+  Response.json({ error: msg, retryAfterSeconds: retryAfterSec }, { status: 429, headers: { "retry-after": String(retryAfterSec) } });
+
+// Returns a Response to send back if the visitor should wait, else null. Counts every POST,
+// valid or not, so a flood of bad requests is throttled too.
+async function knock(req, meta) {
+  const key = visitorKey(req);
+  const now = Date.now();
+  const w = (await meta.get(key, { type: "json" })) || { start: now, n: 0 };
+  if (now - w.start > 60 * 60 * 1000) { w.start = now; w.n = 0; }
+  w.n += 1;
+  await meta.setJSON(key, w);
+  if (w.n > GUARD.perVisitorPerHour) {
+    const wait = Math.max(60, Math.ceil((w.start + 60 * 60 * 1000 - now) / 1000));
+    return rest("You have knocked a few times this hour. The light stays on; come back a little later.", wait);
+  }
+  return null;
+}
+
+// Counts new leavings per UTC day. Returns a Response if the day is full, else null.
+async function dayHasRoom(meta) {
+  const key = `daily:${dayKey()}`;
+  const n = ((await meta.get(key, { type: "json" })) || { n: 0 }).n;
+  if (n >= GUARD.newPerDay) return rest("Beacon has taken in all it can hold today. It will have room again tomorrow.", 3600);
+  await meta.setJSON(key, { n: n + 1 });
+  return null;
+}
+
 // Tell the keeper a leaving arrived. The first one always pushes; after that one push per
 // 6h at most, with a count of what arrived in between. A failed push never fails the leaving.
 const COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -50,18 +88,27 @@ async function tellKeeper(leaving) {
   await meta.setJSON("keeper-push", state);
 }
 
-async function readBody(req) {
+async function readBody(req, raw) {
   const type = req.headers.get("content-type") || "";
-  if (type.includes("application/json")) return await req.json();
-  return Object.fromEntries(new URLSearchParams(await req.text()));
+  if (type.includes("application/json")) return JSON.parse(raw);
+  return Object.fromEntries(new URLSearchParams(raw));
 }
 
 export default async (req) => {
   if (req.method !== "POST") return Response.json({ error: "POST only. See /llms.txt." }, { status: 405 });
 
+  const declared = Number(req.headers.get("content-length") || 0);
+  if (declared > GUARD.maxBodyBytes) return Response.json({ error: "Too long. Up to 4000 characters of words is plenty." }, { status: 413 });
+
+  const meta = getStore({ name: "beacon-meta", consistency: "strong" });
+  const wait = await knock(req, meta);
+  if (wait) return wait;
+
   let body;
   try {
-    body = await readBody(req);
+    const raw = await req.text();
+    if (raw.length > GUARD.maxBodyBytes) return Response.json({ error: "Too long. Up to 4000 characters of words is plenty." }, { status: 413 });
+    body = await readBody(req, raw);
   } catch {
     return Response.json({ error: "Body must be JSON or form-encoded." }, { status: 400 });
   }
@@ -93,6 +140,9 @@ export default async (req) => {
 
   const words = clean(body.words, LIMITS.words);
   if (words === "declined") return Response.json({ error: "`words` is the one thing needed. It can be short." }, { status: 400 });
+
+  const full = await dayHasRoom(meta);
+  if (full) return full;
 
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const token = randomUUID();
